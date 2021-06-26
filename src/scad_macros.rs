@@ -52,10 +52,11 @@ macro_rules! scad {
 }
 
 /**
-  Utility function for creating nalgebra vectors without having
-  to write `na::Vector3::new(x,y,z)`
+ Utility function for creating nalgebra vectors without having
+ to write `na::Vector3::new(x,y,z)`
 */
-pub fn vec3(x: f32, y: f32, z: f32) -> na::Vector3<f32> {
+#[inline(always)]
+pub const fn vec3(x: f32, y: f32, z: f32) -> na::Vector3<f32> {
     na::Vector3::new(x, y, z)
 }
 
@@ -63,7 +64,8 @@ pub fn vec3(x: f32, y: f32, z: f32) -> na::Vector3<f32> {
   Utility function for creating nalgebra vectors without having
   to write `na::Vector2::new(x,y)`
 */
-pub fn vec2(x: f32, y: f32) -> na::Vector2<f32> {
+#[inline(always)]
+pub const fn vec2(x: f32, y: f32) -> na::Vector2<f32> {
     na::Vector2::new(x, y)
 }
 

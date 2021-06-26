@@ -24,27 +24,10 @@ impl ScadType for na::Vector2<f32> {
     }
 }
 
-impl ScadType for f32 {
-    fn get_code(&self) -> String {
-        self.to_string()
-    }
-}
-impl ScadType for i32 {
-    fn get_code(&self) -> String {
-        self.to_string()
-    }
-}
-impl ScadType for usize {
-    fn get_code(&self) -> String {
-        self.to_string()
-    }
-}
-impl ScadType for u64 {
-    fn get_code(&self) -> String {
-        self.to_string()
-    }
-}
-impl ScadType for bool {
+use duplicate::duplicate;
+
+#[duplicate(primitive; [bool]; [usize]; [f32]; [f64]; [u32]; [u64]; [i32]; [i64])]
+impl ScadType for primitive {
     fn get_code(&self) -> String {
         self.to_string()
     }
@@ -52,9 +35,15 @@ impl ScadType for bool {
 
 impl<T: ScadType> ScadType for Vec<T> {
     fn get_code(&self) -> String {
+        (&self[..]).get_code()
+    }
+}
+
+impl<T: ScadType> ScadType for &[T] {
+    fn get_code(&self) -> String {
         let mut result = "[".to_string();
 
-        for elem in self {
+        for elem in *self {
             result = result + &elem.get_code() + ",";
         }
 

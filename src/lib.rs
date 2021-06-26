@@ -132,6 +132,7 @@
 */
 
 pub mod common_objects;
+mod refactor;
 mod scad_element;
 mod scad_file;
 mod scad_object;
@@ -150,3 +151,4 @@ pub use scad_file::*;
 pub use scad_type::*;
 
 pub use common_objects::*;
+pub use nalgebra;

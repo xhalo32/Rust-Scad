@@ -11,4 +11,5 @@ readme = "Readme.md"
 edition = "2018"
 
 [dependencies]
+duplicate = "0.3.0"
 nalgebra= "0.27.1"
