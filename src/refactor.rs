@@ -58,6 +58,15 @@ impl Scad for primitive {
     }
 }
 
+impl<T: Scad> Scad for Option<T> {
+    fn write_scad(&self, f: &mut Formatter) -> Result {
+        if let Some(scad) = self {
+            scad.write_scad(f);
+        }
+        Ok(())
+    }
+}
+
 fn write_scad_iter<'a, T: Scad + 'a>(
     mut iter: impl Iterator<Item = &'a T>,
     f: &mut Formatter,
@@ -93,7 +102,7 @@ impl<T: Scad, const N: usize> Scad for [T; N] {
 }
 
 /// Since scad allows creation of circle like objects using either radius or diameter,
-/// this enum specifies which format to use
+/// this enum specifies which format to use. r=/d= is added by the caller
 #[derive(Clone, Copy, Debug)]
 pub enum CircleSize {
     Radius(f64),
@@ -110,24 +119,60 @@ impl Scad for CircleSize {
     }
 }
 
-/// Scad allows using one number in place of a vector of 3 floats
-/// with cubes for example
 #[derive(Clone, Debug)]
 pub enum CubeSize {
     Scalar(f64),
     Vector3([f64; 3]),
 }
 
+impl Scad for CubeSize {
+    fn write_scad(&self, f: &mut Formatter) -> Result {
+        use CubeSize::*;
+
+        match self {
+            Scalar(v) => v.write_scad(f),
+            Vector3(v) => v.write_scad(f),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum CylinderType {
+    Cylinder(CircleSize),
+    Cone(CircleSize, CircleSize),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum Center {
+    True,
+    False,
+}
+
+impl Scad for Center {
+    fn write_scad(&self, f: &mut Formatter) -> Result {
+        use Center::*;
+
+        if let True = self {
+            write!(f, "center=true")?;
+        }
+        Ok(())
+    }
+}
+
 pub enum ThreeD<'a> {
-    /// sphere(radius | d=diameter)
+    /// `sphere(radius | d=diameter)`
     ///
     /// Source: <https://en.wikibooks.org/wiki/OpenSCAD_User_Manual/Primitive_Solids#sphere>
     Sphere(Option<CircleSize>),
-    /// cube(size, center)
+    /// `cube(size, center)` or `cube([width,depth,height], center)`
     ///
     /// Source <https://en.wikibooks.org/wiki/OpenSCAD_User_Manual/Primitive_Solids#cube>
-    Cube(Option<CubeSize>, Option<bool>),
-    /// polyhedron(points, facens, convexity)
+    Cube(Option<CubeSize>, Option<Center>),
+    /// `cylinder(h,r|d,center)` or `cylinder(h,r1|d1,r2|d2,center)`
+    ///
+    /// Source <https://en.wikibooks.org/wiki/OpenSCAD_User_Manual/Primitive_Solids#cylinder>
+    Cylinder(Option<f64>, Option<CylinderType>, Option<bool>),
+    /// `polyhedron(points, facens, convexity)`
     ///
     /// TODO: convexity parameter
     /// Source: <https://en.wikibooks.org/wiki/OpenSCAD_User_Manual/Primitive_Solids#polyhedron>
@@ -151,31 +196,18 @@ impl<'a> Scad for ThreeD<'a> {
                 }
             },
             Cube(ref size, center) => {
-                let center = center
-                    .map(|center| {
-                        if size.is_some() {
-                            if center {
-                                ",true"
-                            } else {
-                                ""
-                            }
-                        } else {
-                            // specify parameter name if size is not given
-                            if center {
-                                "center=true"
-                            } else {
-                                ""
-                            }
-                        }
-                    })
-                    .unwrap_or("");
-                match size {
-                    Some(CubeSize::Scalar(side)) => write!(f, "cube({}{})", ToScad(side), center),
-                    Some(CubeSize::Vector3(slice)) => {
-                        write!(f, "cube({}{})", ToScad(slice), center)
-                    }
-                    None => write!(f, "cube({})", center),
-                }?;
+                let comma = if size.is_some() && matches!(center, Some(Center::True)) {
+                    ","
+                } else {
+                    ""
+                };
+                let center = ToScad(&center);
+                let s = ToScad(size);
+                write!(f, "cube({}{}{})", s, comma, center)?;
+            }
+            Cylinder(height, ty, center) => {
+                let comma = if center.is_some() { "," } else { "" };
+                let center = ToScad(&center);
             }
             Polyhedron(ref points, ref faces) => {
                 write!(
@@ -207,28 +239,32 @@ mod tests {
         assert_eq!(sphere.to_scad(), "sphere()");
     }
 
-    static STATIC_CUBE: ThreeD = ThreeD::Cube(Some(CubeSize::Vector3([1.0, 2.0, 3.0])), Some(true));
+    static STATIC_CUBE: ThreeD =
+        ThreeD::Cube(Some(CubeSize::Vector3([1.0, 2.0, 3.0])), Some(Center::True));
 
     #[test]
     fn cube() {
-        assert_eq!(STATIC_CUBE.to_scad(), "cube([1,2,3],true)");
+        assert_eq!(STATIC_CUBE.to_scad(), "cube([1,2,3],center=true)");
 
         let cube = ThreeD::Cube(None, None);
         assert_eq!(cube.to_scad(), "cube()");
 
-        let cube = ThreeD::Cube(None, Some(false));
+        let cube = ThreeD::Cube(None, Some(Center::False));
         assert_eq!(cube.to_scad(), "cube()");
 
-        let cube = ThreeD::Cube(None, Some(true));
+        let cube = ThreeD::Cube(None, Some(Center::True));
         assert_eq!(cube.to_scad(), "cube(center=true)");
 
         let cube = ThreeD::Cube(Some(CubeSize::Scalar(-0.0)), None);
         assert_eq!(cube.to_scad(), "cube(-0)");
 
-        let cube = ThreeD::Cube(Some(CubeSize::Scalar(6.0)), Some(true));
-        assert_eq!(cube.to_scad(), "cube(6,true)");
+        let cube = ThreeD::Cube(Some(CubeSize::Scalar(6.0)), Some(Center::True));
+        assert_eq!(cube.to_scad(), "cube(6,center=true)");
 
-        let cube = ThreeD::Cube(Some(CubeSize::Vector3([1.0, 0.0, -0.0])), Some(false));
+        let cube = ThreeD::Cube(
+            Some(CubeSize::Vector3([1.0, 0.0, -0.0])),
+            Some(Center::False),
+        );
         assert_eq!(cube.to_scad(), "cube([1,0,-0])");
     }
 
