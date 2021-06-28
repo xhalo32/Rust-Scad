@@ -44,23 +44,40 @@ impl<'a, T: Scad + ?Sized> fmt::Display for ToScad<'a, T> {
     }
 }
 
-/// ### PrependComma
-///
-/// A wrapper for any `Option<Scad>` which writes
-/// comma in front of the element if it is some.
-///
-/// Useful when the comma should be prepended
-/// unconditionally of the preceding arguments.
-pub struct PrependComma<T: Scad>(pub Option<T>);
+#[derive(Clone, Copy, Debug)]
+pub enum CommaVariant {
+    Before,
+    After,
+}
 
-impl<T: Scad> Scad for PrependComma<T> {
+use CommaVariant::*;
+
+pub struct InsertComma<'scad, T: Scad>(CommaVariant, &'scad T);
+
+impl<'scad, T: Scad> Scad for InsertComma<'scad, T> {
     fn write_scad(&self, f: &mut Formatter) -> Result {
-        let comma = if self.0.is_some() { "," } else { "" };
-        write!(f, "{}{}", comma, ToScad(&self.0))
+        match self.0 {
+            Before => write!(f, ",{}", ToScad(self.1)),
+            After => write!(f, "{},", ToScad(self.1)),
+        }
     }
 }
 
-impl<T: Scad> fmt::Display for PrependComma<T> {
+impl<'scad, T: Scad> fmt::Display for InsertComma<'scad, T> {
+    fn fmt(&self, f: &mut Formatter) -> Result {
+        self.write_scad(f)
+    }
+}
+
+pub struct NamedArgument<'name, 'scad, T: Scad>(&'name str, &'scad T);
+
+impl<'name, 'scad, T: Scad> Scad for NamedArgument<'name, 'scad, T> {
+    fn write_scad(&self, f: &mut Formatter) -> Result {
+        write!(f, "{}={}", self.0, ToScad(self.1))
+    }
+}
+
+impl<'name, 'scad, T: Scad> fmt::Display for NamedArgument<'name, 'scad, T> {
     fn fmt(&self, f: &mut Formatter) -> Result {
         self.write_scad(f)
     }
@@ -147,7 +164,8 @@ impl Scad for CircleSize {
     }
 }
 
-#[derive(Clone, Debug)]
+// TODO rename and document
+#[derive(Clone, Copy, Debug)]
 pub enum CubeSize {
     Scalar(f64),
     Vector3([f64; 3]),
@@ -256,6 +274,17 @@ pub enum ThreeD<'a> {
     ///
     /// Source: <https://en.wikibooks.org/wiki/OpenSCAD_User_Manual/Importing_Geometry#import>
     Import(&'a str, Option<Convexity>, Option<Layer<'a>>),
+    /// `linear_extrude(height,center,convexity,twist,slices)`
+    ///
+    /// Source: <https://en.wikibooks.org/wiki/OpenSCAD_User_Manual/Using_the_2D_Subsystem#Linear_Extrude>
+    LinearExtrude(
+        Option<f64>,
+        Option<Center>,
+        Option<Convexity>,
+        Option<f64>,      // twist
+        Option<u32>,      // slices
+        Option<CubeSize>, // scale
+    ),
 }
 
 impl<'a> Scad for ThreeD<'a> {
@@ -263,20 +292,21 @@ impl<'a> Scad for ThreeD<'a> {
         use ThreeD::*;
 
         match *self {
-            Sphere(ref size) => match size {
+            Sphere(size) => match size {
                 Some(CircleSize::Radius(radius)) => {
-                    write!(f, "sphere(r={})", ToScad(radius))?;
+                    write!(f, "sphere(r={})", ToScad(&radius))?;
                 }
                 Some(CircleSize::Diameter(diameter)) => {
-                    write!(f, "sphere(d={})", ToScad(diameter))?;
+                    write!(f, "sphere(d={})", ToScad(&diameter))?;
                 }
                 None => {
                     write!(f, "sphere()")?;
                 }
             },
-            Cube(ref size, center) => {
+            Cube(size, center) => {
+                let comma_center = center.as_ref().map(|center| InsertComma(Before, center));
                 if size.is_some() {
-                    write!(f, "cube({}{})", ToScad(size), PrependComma(center))?;
+                    write!(f, "cube({}{})", ToScad(&size), ToScad(&comma_center))?;
                 } else {
                     write!(f, "cube({})", ToScad(&center))?;
                 }
@@ -286,7 +316,8 @@ impl<'a> Scad for ThreeD<'a> {
                     write!(f, "cylinder({})", ToScad(&center))?;
                 }
                 (height, None, center) => {
-                    write!(f, "cylinder({}{})", ToScad(&height), PrependComma(center))?;
+                    let center = center.as_ref().map(|center| InsertComma(Before, center));
+                    write!(f, "cylinder({}{})", ToScad(&height), ToScad(&center))?;
                 }
                 (height, Some(ty), center) => {
                     // If Cylindertype is (None, None) it writes nothing and a comma would be unnecessary
@@ -297,33 +328,69 @@ impl<'a> Scad for ThreeD<'a> {
                         ""
                     };
                     let ty = ToScad(&ty);
+                    let center = center.as_ref().map(|center| InsertComma(Before, center));
                     write!(
                         f,
                         "cylinder({}{}{}{})",
                         ToScad(&height),
                         comma,
                         ty,
-                        PrependComma(center)
+                        ToScad(&center)
                     )?;
                 }
             },
             Polyhedron(ref points, ref faces, convexity) => {
+                let convexity = convexity
+                    .as_ref()
+                    .map(|convexity| InsertComma(Before, convexity));
                 write!(
                     f,
                     "polyhedron(points={},faces={}{})",
                     ToScad(points),
                     ToScad(faces),
-                    PrependComma(convexity)
+                    ToScad(&convexity)
                 )?;
             }
             Import(ref path, convexity, layer) => {
+                let convexity = convexity
+                    .as_ref()
+                    .map(|convexity| InsertComma(Before, convexity));
+                let layer = layer.as_ref().map(|layer| InsertComma(Before, layer));
                 write!(
                     f,
                     "import({}{}{})",
                     ToScad(path),
-                    PrependComma(convexity),
-                    PrependComma(layer)
+                    ToScad(&convexity),
+                    ToScad(&layer)
                 )?;
+            }
+            LinearExtrude(height, center, convexity, twist, slices, scale) => {
+                let height = height
+                    .as_ref()
+                    .map(|height| NamedArgument("height", height));
+                let twist = twist.as_ref().map(|twist| NamedArgument("twist", twist));
+                let slices = slices
+                    .as_ref()
+                    .map(|slices| NamedArgument("slices", slices));
+                let scale = scale.as_ref().map(|scale| NamedArgument("scale", scale));
+
+                write!(f, "linear_extrude(")?;
+                if height.is_some() {
+                    write!(f, "{},", ToScad(&height))?;
+                };
+                if center.is_some() {
+                    write!(f, "{},", ToScad(&center))?;
+                }
+                if convexity.is_some() {
+                    write!(f, "{},", ToScad(&convexity))?;
+                };
+                if twist.is_some() {
+                    write!(f, "{},", ToScad(&twist))?;
+                };
+                if slices.is_some() {
+                    write!(f, "{},", ToScad(&slices))?;
+                };
+                write!(f, "{}", ToScad(&scale))?;
             }
         };
         Ok(())
