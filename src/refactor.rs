@@ -1,4 +1,5 @@
 use std::fmt::{self, Formatter};
+use std::path::PathBuf;
 
 pub type Result = std::fmt::Result;
 
@@ -44,6 +45,28 @@ impl<'a, T: Scad + ?Sized> fmt::Display for ToScad<'a, T> {
     }
 }
 
+/// ### PrependComma
+///
+/// A wrapper for any `Option<Scad>` which writes
+/// comma in front of the element if it is some.
+///
+/// Useful when the comma should be prepended
+/// unconditionally of the preceding arguments.
+pub struct PrependComma<T: Scad>(pub Option<T>);
+
+impl<T: Scad> Scad for PrependComma<T> {
+    fn write_scad(&self, f: &mut Formatter) -> Result {
+        let comma = if self.0.is_some() { "," } else { "" };
+        write!(f, "{}{}", comma, ToScad(&self.0))
+    }
+}
+
+impl<T: Scad> fmt::Display for PrependComma<T> {
+    fn fmt(&self, f: &mut Formatter) -> Result {
+        self.write_scad(f)
+    }
+}
+
 pub trait Scad {
     fn write_scad(&self, f: &mut Formatter) -> Result;
     fn to_scad(&self) -> String {
@@ -58,10 +81,18 @@ impl Scad for primitive {
     }
 }
 
+impl Scad for PathBuf {
+    fn write_scad(&self, f: &mut Formatter) -> Result {
+        self.to_str()
+            .expect("path must contain valid unicode")
+            .write_scad(f)
+    }
+}
+
 impl<T: Scad> Scad for Option<T> {
     fn write_scad(&self, f: &mut Formatter) -> Result {
         if let Some(scad) = self {
-            scad.write_scad(f);
+            scad.write_scad(f)?;
         }
         Ok(())
     }
@@ -172,22 +203,39 @@ impl Scad for CylinderType {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub enum Center {
-    True,
-    False,
-}
+pub struct Center(bool);
 
 impl Scad for Center {
     fn write_scad(&self, f: &mut Formatter) -> Result {
-        use Center::*;
-
-        if let True = self {
-            write!(f, "center=true")?;
-        }
+        write!(f, "center={}", self.0)?;
         Ok(())
     }
 }
 
+/// ### Convexity
+///
+/// An Integer. The convexity parameter specifies the maximum
+/// number of front sides (back sides) a ray intersecting the
+/// object might penetrate. This parameter is needed only for
+/// correctly displaying the object in OpenCSG preview mode
+/// and has no effect on the polyhedron rendering. Optional.
+#[derive(Clone, Copy, Debug)]
+pub struct Convexity(u32);
+
+impl Scad for Convexity {
+    fn write_scad(&self, f: &mut Formatter) -> Result {
+        write!(f, "convexity={}", self.0)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Layer<'a>(&'a str);
+
+impl<'a> Scad for Layer<'a> {
+    fn write_scad(&self, f: &mut Formatter) -> Result {
+        write!(f, "layer={}", self.0)
+    }
+}
 #[derive(Clone, Debug)]
 pub enum ThreeD<'a> {
     /// `sphere(radius | d=diameter)`
@@ -206,7 +254,11 @@ pub enum ThreeD<'a> {
     ///
     /// TODO: convexity parameter
     /// Source: <https://en.wikibooks.org/wiki/OpenSCAD_User_Manual/Primitive_Solids#polyhedron>
-    Polyhedron(&'a [[f64; 3]], &'a [&'a [u32]]),
+    Polyhedron(&'a [[f64; 3]], &'a [&'a [u32]], Option<Convexity>),
+    /// `import("….ext")`
+    ///
+    /// Source: <https://en.wikibooks.org/wiki/OpenSCAD_User_Manual/Importing_Geometry#import>
+    Import(PathBuf, Option<Convexity>, Option<Layer<'a>>),
 }
 
 impl<'a> Scad for ThreeD<'a> {
@@ -226,53 +278,54 @@ impl<'a> Scad for ThreeD<'a> {
                 }
             },
             Cube(ref size, center) => {
-                let comma = if size.is_some() && matches!(center, Some(Center::True)) {
-                    ","
+                if size.is_some() {
+                    write!(f, "cube({}{})", ToScad(size), PrependComma(center))?;
                 } else {
-                    ""
-                };
-                let center = ToScad(&center);
-                let size = ToScad(size);
-                write!(f, "cube({}{}{})", size, comma, center)?;
+                    write!(f, "cube({})", ToScad(&center))?;
+                }
             }
             Cylinder(height, ty, center) => match (height, ty, center) {
-                (None, None, None) => {
-                    write!(f, "cylinder()")?;
-                }
-                (Some(height), None, None) => {
-                    write!(f, "cylinder({})", height)?;
-                }
-                (None, Some(ty), None) => {
-                    write!(f, "cylinder({})", ToScad(&ty))?;
-                }
-                (None, None, Some(center)) => {
+                (None, None, center) => {
                     write!(f, "cylinder({})", ToScad(&center))?;
                 }
-                (Some(height), Some(ty), None) => {
-                    write!(f, "cylinder({},{})", height, ToScad(&ty))?;
+                (height, None, center) => {
+                    write!(f, "cylinder({}{})", ToScad(&height), PrependComma(center))?;
                 }
-                (None, Some(ty), Some(center)) => {
-                    write!(f, "cylinder({},{})", ToScad(&ty), ToScad(&center))?;
-                }
-                (Some(height), None, Some(center)) => {
-                    write!(f, "cylinder({},{})", height, ToScad(&center))?;
-                }
-                (Some(height), Some(ty), Some(center)) => {
+                (height, Some(ty), center) => {
+                    // If Cylindertype is (None, None) it writes nothing and a comma would be unnecessary
+                    let comma = if height.is_some() && !matches!(ty, CylinderType::Cone(None, None))
+                    {
+                        ","
+                    } else {
+                        ""
+                    };
+                    let ty = ToScad(&ty);
                     write!(
                         f,
-                        "cylinder({},{},{})",
-                        height,
-                        ToScad(&ty),
-                        ToScad(&center)
+                        "cylinder({}{}{}{})",
+                        ToScad(&height),
+                        comma,
+                        ty,
+                        PrependComma(center)
                     )?;
                 }
             },
-            Polyhedron(ref points, ref faces) => {
+            Polyhedron(ref points, ref faces, convexity) => {
                 write!(
                     f,
-                    "polyhedron(points={},faces={})",
+                    "polyhedron(points={},faces={}{})",
                     ToScad(points),
-                    ToScad(faces)
+                    ToScad(faces),
+                    PrependComma(convexity)
+                )?;
+            }
+            Import(ref path, convexity, layer) => {
+                write!(
+                    f,
+                    "import({}{}{})",
+                    ToScad(path),
+                    PrependComma(convexity),
+                    PrependComma(layer)
                 )?;
             }
         };
@@ -281,11 +334,12 @@ impl<'a> Scad for ThreeD<'a> {
 }
 
 /// Test that a given `scad` generates the given `string`
+#[macro_export]
 macro_rules! scad_test {
-    ($scad:expr => $string:expr) => {
+    ($scad:expr, $string:expr) => {
         assert!(
             $scad.to_scad() == $string,
-            "Scad `{:?}` generates:\n          `{}`\nexpected: `{}`",
+            "Scad `{:?}`\ngenerates: `{}`\n expected: `{}`",
             $scad,
             $scad.to_scad(),
             $string
@@ -296,120 +350,187 @@ macro_rules! scad_test {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use CircleSize::*;
 
-    static STATIC_SPHERE: ThreeD = ThreeD::Sphere(Some(CircleSize::Diameter(8.5)));
+    static STATIC_SPHERE: ThreeD = ThreeD::Sphere(Some(Diameter(8.5)));
 
     #[test]
     fn sphere() {
-        scad_test!(STATIC_SPHERE => "sphere(d=8.5)");
-        scad_test!(
-            ThreeD::Sphere(Some(CircleSize::Radius(-0.0))) =>
-            "sphere(r=-0)"
-        );
-        scad_test!(ThreeD::Sphere(None) => "sphere()");
+        scad_test!(STATIC_SPHERE, "sphere(d=8.5)");
+        scad_test!(ThreeD::Sphere(Some(Radius(-0.0))), "sphere(r=-0)");
+        scad_test!(ThreeD::Sphere(None), "sphere()");
     }
 
     static STATIC_CUBE: ThreeD =
-        ThreeD::Cube(Some(CubeSize::Vector3([1.0, 2.0, 3.0])), Some(Center::True));
+        ThreeD::Cube(Some(CubeSize::Vector3([1.0, 2.0, 3.0])), Some(Center(true)));
 
     #[test]
     fn cube() {
-        scad_test!(STATIC_CUBE => "cube([1,2,3],center=true)");
-        scad_test!(ThreeD::Cube(None, None) => "cube()");
-        scad_test!(ThreeD::Cube(None, Some(Center::False)) => "cube()");
-        scad_test!(ThreeD::Cube(None, Some(Center::True)) => "cube(center=true)");
-        scad_test!(ThreeD::Cube(Some(CubeSize::Scalar(-0.0)), None) => "cube(-0)");
-        scad_test!(ThreeD::Cube(Some(CubeSize::Scalar(6.0)), Some(Center::True)) => "cube(6,center=true)");
-        scad_test!(ThreeD::Cube(
-            Some(CubeSize::Vector3([1.0, 0.0, -0.0])),
-            Some(Center::False),
-        ) => "cube([1,0,-0])");
+        scad_test!(STATIC_CUBE, "cube([1,2,3],center=true)");
+        scad_test!(ThreeD::Cube(None, None), "cube()");
+        scad_test!(
+            ThreeD::Cube(None, Some(Center(false))),
+            "cube(center=false)"
+        );
+        scad_test!(ThreeD::Cube(None, Some(Center(true))), "cube(center=true)");
+        scad_test!(ThreeD::Cube(Some(CubeSize::Scalar(-0.0)), None), "cube(-0)");
+        scad_test!(
+            ThreeD::Cube(Some(CubeSize::Scalar(6.0)), Some(Center(true))),
+            "cube(6,center=true)"
+        );
+        scad_test!(
+            ThreeD::Cube(Some(CubeSize::Vector3([1.0, 2.0, -0.0])), None),
+            "cube([1,2,-0])"
+        );
+        scad_test!(
+            ThreeD::Cube(
+                Some(CubeSize::Vector3([1.0, 0.0, -0.0])),
+                Some(Center(false)),
+            ),
+            "cube([1,0,-0],center=false)"
+        );
     }
 
     static STATIC_CYLINDER: ThreeD = ThreeD::Cylinder(
         Some(5.5),
-        Some(CylinderType::Cone(None, Some(CircleSize::Diameter(3.0)))),
-        Some(Center::True),
+        Some(CylinderType::Cone(None, Some(Diameter(3.0)))),
+        Some(Center(true)),
     );
 
     #[test]
     fn cylinder() {
-        scad_test!(STATIC_CYLINDER => "cylinder(5.5,d2=3,center=true)");
-        scad_test!(ThreeD::Cylinder(None, None, None) => "cylinder()");
-        scad_test!(ThreeD::Cylinder(Some(-0.0), None, None) => "cylinder(-0)");
-        scad_test!(ThreeD::Cylinder(
-            None,
-            Some(CylinderType::Cylinder(CircleSize::Radius(2.0))),
-            None,
-        ) => "cylinder(r=2)");
-        scad_test!(ThreeD::Cylinder(
-            None,
-            Some(CylinderType::Cylinder(CircleSize::Diameter(2.0))),
-            None,
-        ) => "cylinder(d=2)");
-        scad_test!(ThreeD::Cylinder(
-            None,
-            Some(CylinderType::Cone(None, None)),
-            None,
-        ) => "cylinder()");
-        scad_test!(ThreeD::Cylinder(
-            None,
-            Some(CylinderType::Cone(Some(CircleSize::Radius(1.0)), None)),
-            None,
-        ) => "cylinder(r1=1)");
-        scad_test!(ThreeD::Cylinder(
-            None,
-            Some(CylinderType::Cone(Some(CircleSize::Diameter(1.0)), None)),
-            None,
-        ) => "cylinder(d1=1)");
-        scad_test!(ThreeD::Cylinder(
-            None,
-            Some(CylinderType::Cone(None, Some(CircleSize::Radius(1.0)))),
-            None,
-        ) => "cylinder(r2=1)");
-        scad_test!(ThreeD::Cylinder(
-            None,
-            Some(CylinderType::Cone(None, Some(CircleSize::Diameter(1.0)))),
-            None,
-        ) => "cylinder(d2=1)");
-        scad_test!(ThreeD::Cylinder(
-            None,
-            Some(CylinderType::Cone(Some(CircleSize::Radius(1.0)), Some(CircleSize::Radius(1.0)))),
-            None,
-        ) => "cylinder(r1=1,r2=1)");
-        scad_test!(ThreeD::Cylinder(
-            None,
-            Some(CylinderType::Cone(Some(CircleSize::Diameter(1.0)), Some(CircleSize::Radius(1.0)))),
-            None,
-        ) => "cylinder(d1=1,r2=1)");
-        scad_test!(ThreeD::Cylinder(
-            None,
-            Some(CylinderType::Cone(Some(CircleSize::Radius(1.0)), Some(CircleSize::Diameter(1.0)))),
-            None,
-        ) => "cylinder(r1=1,d2=1)");
-        scad_test!(ThreeD::Cylinder(
-            None,
-            Some(CylinderType::Cone(Some(CircleSize::Diameter(1.0)), Some(CircleSize::Diameter(1.0)))),
-            None,
-        ) => "cylinder(d1=1,d2=1)");
-        scad_test!(ThreeD::Cylinder(None, None, Some(Center::True)) => "cylinder(center=true)");
-        scad_test!(ThreeD::Cylinder(
-            Some(9.0),
-            Some(CylinderType::Cone(Some(CircleSize::Radius(1.0)), Some(CircleSize::Diameter(1.0)))),
-            Some(Center::True),
-        ) => "cylinder(9,r1=1,d2=1,center=true)");
+        scad_test!(STATIC_CYLINDER, "cylinder(5.5,d2=3,center=true)");
+        scad_test!(ThreeD::Cylinder(None, None, None), "cylinder()");
+        scad_test!(ThreeD::Cylinder(Some(-0.0), None, None), "cylinder(-0)");
+        scad_test!(
+            ThreeD::Cylinder(None, Some(CylinderType::Cylinder(Radius(2.0))), None,),
+            "cylinder(r=2)"
+        );
+        scad_test!(
+            ThreeD::Cylinder(None, Some(CylinderType::Cylinder(Diameter(2.0))), None,),
+            "cylinder(d=2)"
+        );
+        scad_test!(
+            ThreeD::Cylinder(None, Some(CylinderType::Cone(None, None)), None,),
+            "cylinder()"
+        );
+        scad_test!(
+            ThreeD::Cylinder(
+                None,
+                Some(CylinderType::Cone(Some(Radius(1.0)), None)),
+                None,
+            ),
+            "cylinder(r1=1)"
+        );
+        scad_test!(
+            ThreeD::Cylinder(
+                None,
+                Some(CylinderType::Cone(Some(Diameter(1.0)), None)),
+                None,
+            ),
+            "cylinder(d1=1)"
+        );
+        scad_test!(
+            ThreeD::Cylinder(
+                None,
+                Some(CylinderType::Cone(None, Some(Radius(1.0)))),
+                None,
+            ),
+            "cylinder(r2=1)"
+        );
+        scad_test!(
+            ThreeD::Cylinder(
+                None,
+                Some(CylinderType::Cone(None, Some(Diameter(1.0)))),
+                None,
+            ),
+            "cylinder(d2=1)"
+        );
+        scad_test!(
+            ThreeD::Cylinder(
+                None,
+                Some(CylinderType::Cone(Some(Radius(1.0)), Some(Radius(1.0)))),
+                None,
+            ),
+            "cylinder(r1=1,r2=1)"
+        );
+        scad_test!(
+            ThreeD::Cylinder(
+                None,
+                Some(CylinderType::Cone(Some(Diameter(1.0)), Some(Radius(1.0)))),
+                None,
+            ),
+            "cylinder(d1=1,r2=1)"
+        );
+        scad_test!(
+            ThreeD::Cylinder(
+                None,
+                Some(CylinderType::Cone(Some(Radius(1.0)), Some(Diameter(1.0)))),
+                None,
+            ),
+            "cylinder(r1=1,d2=1)"
+        );
+        scad_test!(
+            ThreeD::Cylinder(
+                None,
+                Some(CylinderType::Cone(Some(Diameter(1.0)), Some(Diameter(1.0)))),
+                None,
+            ),
+            "cylinder(d1=1,d2=1)"
+        );
+        scad_test!(
+            ThreeD::Cylinder(None, None, Some(Center(true))),
+            "cylinder(center=true)"
+        );
+        scad_test!(
+            ThreeD::Cylinder(Some(5.0), None, Some(Center(true))),
+            "cylinder(5,center=true)"
+        );
+        scad_test!(
+            ThreeD::Cylinder(
+                Some(-4.0),
+                Some(CylinderType::Cone(None, Some(Radius(2.5)))),
+                None
+            ),
+            "cylinder(-4,r2=2.5)"
+        );
+        scad_test!(
+            ThreeD::Cylinder(
+                None,
+                Some(CylinderType::Cone(Some(Radius(2.5)), None)),
+                Some(Center(true))
+            ),
+            "cylinder(r1=2.5,center=true)"
+        );
+        scad_test!(
+            ThreeD::Cylinder(
+                Some(9.0),
+                Some(CylinderType::Cone(Some(Radius(1.0)), Some(Diameter(1.0)))),
+                Some(Center(true)),
+            ),
+            "cylinder(9,r1=1,d2=1,center=true)"
+        );
+        scad_test!(
+            ThreeD::Cylinder(
+                Some(15.0),
+                Some(CylinderType::Cone(None, None)),
+                Some(Center(false)),
+            ),
+            "cylinder(15,center=false)"
+        );
     }
 
     static STATIC_POLYHEDRON: ThreeD = ThreeD::Polyhedron(
         &[[1.0, -2.0, -0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
         &[&[0, 1, 2]],
+        Some(Convexity(10)),
     );
 
     #[test]
     fn polyhedron() {
         scad_test!(
-            STATIC_POLYHEDRON =>
-            "polyhedron(points=[[1,-2,-0],[1,1,0],[0,1,0]],faces=[[0,1,2]])"
+            STATIC_POLYHEDRON,
+            "polyhedron(points=[[1,-2,-0],[1,1,0],[0,1,0]],faces=[[0,1,2]],convexity=10)"
         );
     }
 }
