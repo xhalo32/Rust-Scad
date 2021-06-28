@@ -1,5 +1,4 @@
 use std::fmt::{self, Formatter};
-use std::path::PathBuf;
 
 pub type Result = std::fmt::Result;
 
@@ -74,18 +73,16 @@ pub trait Scad {
     }
 }
 
-#[duplicate::duplicate(primitive; [f64]; [u32]; [&str])]
+#[duplicate::duplicate(primitive; [f64]; [u32])]
 impl Scad for primitive {
     fn write_scad(&self, f: &mut Formatter) -> Result {
         write!(f, "{}", self)
     }
 }
 
-impl Scad for PathBuf {
+impl Scad for &str {
     fn write_scad(&self, f: &mut Formatter) -> Result {
-        self.to_str()
-            .expect("path must contain valid unicode")
-            .write_scad(f)
+        write!(f, "\"{}\"", self)
     }
 }
 
@@ -258,7 +255,7 @@ pub enum ThreeD<'a> {
     /// `import("….ext")`
     ///
     /// Source: <https://en.wikibooks.org/wiki/OpenSCAD_User_Manual/Importing_Geometry#import>
-    Import(PathBuf, Option<Convexity>, Option<Layer<'a>>),
+    Import(&'a str, Option<Convexity>, Option<Layer<'a>>),
 }
 
 impl<'a> Scad for ThreeD<'a> {
@@ -532,5 +529,12 @@ mod tests {
             STATIC_POLYHEDRON,
             "polyhedron(points=[[1,-2,-0],[1,1,0],[0,1,0]],faces=[[0,1,2]],convexity=10)"
         );
+    }
+
+    static STATIC_IMPORT: ThreeD = ThreeD::Import("./test.scad", Some(Convexity(10)), None);
+
+    #[test]
+    fn import() {
+        scad_test!(STATIC_IMPORT, "import(\"./test.scad\",convexity=10)");
     }
 }
