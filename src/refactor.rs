@@ -393,6 +393,11 @@ mod tests {
             None,
         ) => "cylinder(d1=1,d2=1)");
         scad_test!(ThreeD::Cylinder(None, None, Some(Center::True)) => "cylinder(center=true)");
+        scad_test!(ThreeD::Cylinder(
+            Some(9.0),
+            Some(CylinderType::Cone(Some(CircleSize::Radius(1.0)), Some(CircleSize::Diameter(1.0)))),
+            Some(Center::True),
+        ) => "cylinder(9,r1=1,d2=1,center=true)");
     }
 
     static STATIC_POLYHEDRON: ThreeD = ThreeD::Polyhedron(
